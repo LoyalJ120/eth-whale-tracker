@@ -20,7 +20,7 @@ const PRICE_PROVIDERS = [
 ];
 const RPC_ENDPOINTS = [
   "https://ethereum-rpc.publicnode.com",
-  "https://cloudflare-eth.com"
+  "https://eth.drpc.org/"
 ];
 
 const usd = value => new Intl.NumberFormat("es-MX", {
