@@ -2,27 +2,28 @@
 
 Panel de investigación de Ethereum en modo de solo lectura.
 
-## Funciones de la versión 0.1
-- Precio de ETH, variación de 24 horas, capitalización de mercado, volumen y oferta circulante mediante la API pública de CoinGecko.
-- Gráfica del precio de las últimas 24 horas.
-- Consulta de saldos de ETH para direcciones seleccionadas de Ethereum mediante un endpoint público JSON-RPC.
-- Lista de seguimiento personalizada guardada localmente en el navegador y enlaces a Etherscan.
-- Distinción explícita entre atribuciones individuales, organizaciones, custodia de exchanges y contratos de protocolo.
+## Funciones actuales
+- Precio ETH con varias fuentes públicas de respaldo.
+- Capitalización de mercado, volumen de 24 horas y oferta total reportada mediante CoinPaprika; CoinGecko funciona como respaldo.
+- Gráfica de precio de las últimas 24 horas.
+- Saldos ETH de direcciones vigiladas mediante nodos JSON-RPC públicos.
+- Escaneo exploratorio de los últimos 30 bloques para detectar transferencias principales de ETH de 1,000 ETH o más.
+- Lista personalizada de carteras guardada localmente en el navegador y enlaces a Etherscan.
 
-## Uso local
-Abre `index.html` o ejecuta `python -m http.server 8000` y visita http://localhost:8000.
+## Cómo interpretar las cifras
+- La oferta total reportada no es necesariamente igual a la oferta circulante.
+- El escaneo de transferencias cubre los últimos 30 bloques disponibles al momento de la consulta y no es un indexador histórico completo.
+- Solo detecta valor nativo de ETH en transacciones principales. No ve transferencias internas, ERC-20 ni actividad de otras redes.
+- Un movimiento hacia un exchange no demuestra una venta.
+- Un saldo de wallet no prueba quién es el propietario beneficiario.
 
-## Publicación con GitHub Pages
-El repositorio está preparado para publicarse como sitio estático. En GitHub, entra a Settings → Pages y selecciona la rama `main` y la carpeta raíz `/(root)` como fuente.
+## Uso y publicación
+Sitio estático en GitHub Pages. No necesita Render ni servidor propio.
 
-## Limitaciones
-Esta es una primera versión. Todavía no indexa transferencias históricas, no calcula flujos netos de exchanges, no integra datos de flujos de ETF, no almacena capturas diarias en una base de datos ni envía alertas automáticas. El RPC público puede limitar las consultas. El saldo de una cartera no prueba quién es su beneficiario real. Un depósito a un exchange no prueba una venta. Las direcciones personalizadas se guardan únicamente en el navegador.
+## Seguridad
+No solicita claves privadas, frases semilla, conexión de wallet, firmas ni ejecuta operaciones.
 
-## Próximas etapas
-1. Integración de un explorador/indexador para transferencias e historial de saldos.
-2. Etiquetas de entidades con niveles de confianza y evidencia.
-3. Clasificación de flujos de exchanges y filtrado de transferencias internas duplicadas.
-4. Integración de flujos de ETF.
-5. Almacenamiento persistente, capturas programadas y alertas.
+## Limitaciones pendientes
+No hay almacenamiento histórico, cálculo completo de netflows de exchanges, integración de ETF, atribución institucional verificada ni alertas automáticas del lado del servidor. Las consultas se hacen desde el navegador mientras el sitio está abierto.
 
-No utiliza claves privadas, frases semilla, firmas de carteras ni ejecuta operaciones. Herramienta de investigación; no constituye asesoría de inversión.
+Solo para investigación; no constituye asesoría de inversión.
