@@ -10,7 +10,18 @@ const DEFAULT_WALLETS = [
   {label:"Arbitrum Bridge",address:"0x8315177aB297bA92A06054cE80a67Ed4DBd7ed3a",type:"CONTRATO DE PUENTE"},
   {label:"Base Portal",address:"0x49048044D57e1C92A77f79988d21Fa8fAF74E97e",type:"CONTRATO DE PUENTE"}
 ];
+
 const STORE = "ethWhaleTracker.wallets.v1";
+const PRICE_PROVIDERS = [
+  ["Kraken", "https://api.kraken.com/0/public/Ticker?pair=ETHUSD"],
+  ["Coinbase", "https://api.coinbase.com/v2/prices/ETH-USD/spot"],
+  ["CoinGecko", "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true"],
+  ["Binance", "https://api.binance.com/api/v3/ticker/24hr?symbol=ETHUSDT"]
+];
+const RPC_ENDPOINTS = [
+  "https://ethereum-rpc.publicnode.com",
+  "https://cloudflare-eth.com"
+];
 
 const usd = value => new Intl.NumberFormat("es-MX", {
   style:"currency", currency:"USD", maximumFractionDigits:2
@@ -35,112 +46,95 @@ function notify(message) {
   setTimeout(() => toast.classList.remove("show"), 2800);
 }
 
-async function requestJSON(url, timeoutMs = 6500) {
+async function requestJSON(url, timeoutMs = 7000) {
   const response = await fetch(url, {
-    method:"GET",
-    mode:"cors",
-    credentials:"omit",
-    cache:"no-store",
+    method:"GET", mode:"cors", credentials:"omit", cache:"no-store",
     signal:AbortSignal.timeout(timeoutMs),
     headers:{"Accept":"application/json"}
   });
-  if (!response.ok) throw new Error(new URL(url).hostname + " respondió HTTP " + response.status);
+  if (!response.ok) throw new Error(new URL(url).hostname + " HTTP " + response.status);
   return response.json();
 }
 
-function normalizePrice(price, change, source, details = {}) {
-  if (!Number.isFinite(price) || price <= 0) throw new Error("La fuente devolvió un precio no válido");
-  return {
-    price,
-    change: Number.isFinite(change) ? change : null,
-    source,
-    high: Number.isFinite(details.high) ? details.high : null,
-    low: Number.isFinite(details.low) ? details.low : null,
-    marketCap: Number.isFinite(details.marketCap) ? details.marketCap : null,
-    volume: Number.isFinite(details.volume) ? details.volume : null,
-    supply: Number.isFinite(details.supply) ? details.supply : null,
-    approximate: Boolean(details.approximate)
-  };
-}
-
-async function fromKraken() {
-  const data = await requestJSON("https://api.kraken.com/0/public/Ticker?pair=ETHUSD");
-  if (data.error && data.error.length) throw new Error(data.error.join(", "));
-  const ticker = Object.values(data.result || {})[0];
-  if (!ticker) throw new Error("Kraken no devolvió el par ETH/USD");
-  const price = Number(ticker.c && ticker.c[0]);
-  const open = Number(ticker.o);
-  const change = open > 0 ? ((price - open) / open) * 100 : null;
-  return normalizePrice(price, change, "Kraken · ETH/USD", {
-    high:Number(ticker.h && ticker.h[1]),
-    low:Number(ticker.l && ticker.l[1]),
-    volume:Number(ticker.v && ticker.v[1]) * price
-  });
-}
-
-async function fromCoinbase() {
-  const data = await requestJSON("https://api.coinbase.com/v2/prices/ETH-USD/spot");
-  return normalizePrice(Number(data.data && data.data.amount), null, "Coinbase · ETH/USD");
-}
-
-async function fromCoinGecko() {
-  const data = await requestJSON("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true");
-  const eth = data.ethereum || {};
-  return normalizePrice(Number(eth.usd), Number(eth.usd_24h_change), "CoinGecko · ETH/USD");
-}
-
-async function fromBinance() {
-  const data = await requestJSON("https://api.binance.com/api/v3/ticker/24hr?symbol=ETHUSDT");
-  return normalizePrice(Number(data.lastPrice), Number(data.priceChangePercent), "Binance · ETH/USDT", {
-    high:Number(data.highPrice),
-    low:Number(data.lowPrice),
-    volume:Number(data.quoteVolume),
-    approximate:true
-  });
-}
-
-async function fromCoinPaprika() {
-  const data = await requestJSON("https://api.coinpaprika.com/v1/tickers/eth-ethereum");
-  const quote = data.quotes && data.quotes.USD;
-  return normalizePrice(Number(quote && quote.price), Number(quote && quote.percent_change_24h), "CoinPaprika · ETH/USD", {
-    marketCap:Number(quote && quote.market_cap),
-    volume:Number(quote && quote.volume_24h),
-    supply:Number(data.circulating_supply)
-  });
-}
-
 async function getLivePrice() {
-  const providers = [fromKraken, fromCoinbase, fromCoinGecko, fromBinance, fromCoinPaprika];
-  const failures = [];
-  for (const provider of providers) {
+  const errors = [];
+  for (const [name,url] of PRICE_PROVIDERS) {
     try {
-      return await provider();
+      const data = await requestJSON(url);
+      if (name === "Kraken") {
+        if (data.error && data.error.length) throw new Error(data.error.join(", "));
+        const ticker = Object.values(data.result || {})[0];
+        if (!ticker) throw new Error("Sin par ETH/USD");
+        const price = Number(ticker.c && ticker.c[0]);
+        const open = Number(ticker.o);
+        return {price,change:open > 0 ? (price-open)/open*100 : null,source:"Kraken · ETH/USD"};
+      }
+      if (name === "Coinbase") {
+        const price = Number(data.data && data.data.amount);
+        return {price,change:null,source:"Coinbase · ETH/USD"};
+      }
+      if (name === "CoinGecko") {
+        const eth = data.ethereum || {};
+        return {price:Number(eth.usd),change:Number.isFinite(Number(eth.usd_24h_change)) ? Number(eth.usd_24h_change) : null,source:"CoinGecko · ETH/USD"};
+      }
+      if (name === "Binance") {
+        return {price:Number(data.lastPrice),change:Number(data.priceChangePercent),source:"Binance · ETH/USDT",approximate:true};
+      }
     } catch (error) {
-      failures.push(error && error.message ? error.message : "Error de conexión");
+      errors.push(name + ": " + (error.message || "sin respuesta"));
     }
   }
-  throw new Error(failures.join(" | "));
+  throw new Error(errors.join(" | "));
+}
+
+async function loadMarketMetrics() {
+  const state = $("marketDataState");
+  try {
+    const data = await requestJSON("https://api.coinpaprika.com/v1/tickers/eth-ethereum");
+    const quote = data.quotes && data.quotes.USD;
+    if (!quote) throw new Error("CoinPaprika no devolvió datos USD");
+
+    $("marketCap").textContent = Number.isFinite(Number(quote.market_cap)) ? usd(Number(quote.market_cap)) : "No disponible";
+    $("volume").textContent = Number.isFinite(Number(quote.volume_24h)) ? usd(Number(quote.volume_24h)) : "No disponible";
+    $("supply").textContent = Number.isFinite(Number(data.total_supply)) ? compact(Number(data.total_supply)) + " ETH" : "No publicada";
+    $("supply").title = "Oferta total reportada por CoinPaprika. La API pública gratuita no publica oferta circulante en este endpoint.";
+    state.textContent = "Disponible · CoinPaprika";
+    state.className = "up";
+    return;
+  } catch (primaryError) {
+    try {
+      const data = await requestJSON("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=ethereum&price_change_percentage=24h");
+      const eth = data[0];
+      if (!eth) throw new Error("CoinGecko sin registro de ETH");
+      $("marketCap").textContent = Number.isFinite(Number(eth.market_cap)) ? usd(Number(eth.market_cap)) : "No disponible";
+      $("volume").textContent = Number.isFinite(Number(eth.total_volume)) ? usd(Number(eth.total_volume)) : "No disponible";
+      $("supply").textContent = Number.isFinite(Number(eth.circulating_supply)) ? compact(Number(eth.circulating_supply)) + " ETH" : "No publicada";
+      $("supply").title = "Oferta circulante reportada por CoinGecko.";
+      state.textContent = "Disponible · CoinGecko";
+      state.className = "up";
+      return;
+    } catch (fallbackError) {
+      $("marketCap").textContent = "No disponible";
+      $("volume").textContent = "No disponible";
+      $("supply").textContent = "No disponible";
+      $("supply").title = "";
+      state.textContent = "Sin respuesta";
+      state.className = "down";
+    }
+  }
 }
 
 function displayPrice(data) {
+  if (!Number.isFinite(data.price) || data.price <= 0) throw new Error("Precio inválido");
   $("ethPrice").textContent = usd(data.price);
-  if (data.change === null) {
-    $("ethChange").textContent = "Variación 24 h no disponible";
-    $("ethChange").className = "change";
-  } else {
-    $("ethChange").textContent = (data.change >= 0 ? "+" : "") + data.change.toFixed(2) + "% · 24 h";
-    $("ethChange").className = "change " + (data.change >= 0 ? "up" : "down");
-  }
-  const qualifier = data.approximate ? " · referencia USDT aproximada a USD" : "";
-  $("marketMeta").textContent = [
-    data.high !== null ? "Máximo 24 h: " + usd(data.high) : null,
-    data.low !== null ? "Mínimo 24 h: " + usd(data.low) : null
-  ].filter(Boolean).join(" · ") || "Cotización de mercado disponible.";
-  $("priceSource").textContent = "Fuente: " + data.source + qualifier +
-    " · Consultado: " + new Date().toLocaleTimeString("es-MX");
-  $("marketCap").textContent = data.marketCap !== null ? usd(data.marketCap) : "—";
-  $("volume").textContent = data.volume !== null ? usd(data.volume) : "—";
-  $("supply").textContent = data.supply !== null ? compact(data.supply) + " ETH" : "—";
+  $("ethChange").textContent = data.change === null
+    ? "Variación 24 h no disponible"
+    : (data.change >= 0 ? "+" : "") + data.change.toFixed(2) + "% · 24 h";
+  $("ethChange").className = "change " + (data.change === null ? "" : data.change >= 0 ? "up" : "down");
+  $("priceSource").textContent = "Fuente del precio: " + data.source +
+    (data.approximate ? " (par USDT, referencia aproximada a USD)" : "") +
+    " · " + new Date().toLocaleTimeString("es-MX");
+  $("priceSource").className = "muted";
 }
 
 async function loadChart() {
@@ -157,62 +151,152 @@ async function loadChart() {
 }
 
 async function market() {
-  try {
-    const live = await getLivePrice();
-    displayPrice(live);
-    // El precio puntual no depende del endpoint de histórico.
-    loadChart();
-  } catch (error) {
+  const priceTask = getLivePrice().then(displayPrice).catch(error => {
     $("ethPrice").textContent = "Sin conexión";
     $("ethChange").textContent = "No se pudo obtener el precio";
-    $("ethChange").className = "change down";
-    $("marketMeta").textContent = "Revisa la conexión a internet o intenta de nuevo.";
-    $("priceSource").textContent = "Fuentes consultadas sin respuesta: " + error.message;
-    $("marketCap").textContent = "—";
-    $("volume").textContent = "—";
-    $("supply").textContent = "—";
-    $("chart").textContent = "No se pudo cargar el historial de precios.";
+    $("priceSource").textContent = "No respondieron las fuentes de precio. Revisa conexión o bloqueo de red.";
+    $("priceSource").className = "muted down";
     throw error;
-  }
+  });
+  const metricsTask = loadMarketMetrics();
+  const chartTask = loadChart();
+  await Promise.allSettled([priceTask,metricsTask,chartTask]);
 }
 
 function drawChart(points) {
   const values = points.map(point => point[1]);
   const min = Math.min(...values), max = Math.max(...values);
   const width = 900, height = 220, padding = 8, range = max - min || 1;
-  const coordinates = values.map((value, index) => [
-    padding + index / (values.length - 1) * (width - 2 * padding),
-    height - padding - (value - min) / range * (height - 2 * padding)
+  const coords = values.map((value,index) => [
+    padding + index/(values.length-1)*(width-2*padding),
+    height-padding-(value-min)/range*(height-2*padding)
   ]);
-  const line = coordinates.map((point, index) =>
+  const line = coords.map((point,index) =>
     (index ? "L" : "M") + point[0].toFixed(1) + " " + point[1].toFixed(1)
   ).join(" ");
-  const area = line + " L " + (width - padding) + " " + height + " L " + padding + " " + height + " Z";
+  const area = line + " L " + (width-padding) + " " + height + " L " + padding + " " + height + " Z";
   $("chart").innerHTML =
-    '<svg viewBox="0 0 ' + width + " " + height + '" preserveAspectRatio="none" role="img" aria-label="Historial del precio de ETH de las últimas 24 horas">' +
+    '<svg viewBox="0 0 '+width+' '+height+'" preserveAspectRatio="none" role="img" aria-label="Historial del precio de ETH de las últimas 24 horas">' +
     '<defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#69d8c4" stop-opacity=".24"/><stop offset="100%" stop-color="#69d8c4" stop-opacity="0"/></linearGradient></defs>' +
-    '<path d="' + area + '" fill="url(#fill)"/><path d="' + line + '" fill="none" stroke="#78e3d1" stroke-width="2.3" vector-effect="non-scaling-stroke"/></svg>';
+    '<path d="'+area+'" fill="url(#fill)"/><path d="'+line+'" fill="none" stroke="#78e3d1" stroke-width="2.3" vector-effect="non-scaling-stroke"/></svg>';
 }
 
 function escapeHTML(value) {
-  return String(value).replace(/[&<>"']/g, character => ({
-    "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+  return String(value).replace(/[&<>"']/g,character => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
   }[character]));
 }
 
-async function getBalance(address, id) {
-  const endpoints = ["https://ethereum-rpc.publicnode.com", "https://cloudflare-eth.com"];
-  for (const endpoint of endpoints) {
+async function rpcCall(endpoint, method, params, id = 1) {
+  const response = await fetch(endpoint,{
+    method:"POST",mode:"cors",credentials:"omit",cache:"no-store",
+    signal:AbortSignal.timeout(9000),
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({jsonrpc:"2.0",method,params,id})
+  });
+  if (!response.ok) throw new Error("RPC HTTP "+response.status);
+  const payload = await response.json();
+  if (payload.error) throw new Error(payload.error.message || "Error RPC");
+  return payload.result;
+}
+
+async function scanTransfersWith(endpoint) {
+  const latestHex = await rpcCall(endpoint,"eth_blockNumber",[]);
+  const latest = Number(BigInt(latestHex));
+  const depth = 30;
+  const transactions = [];
+  let scanned = 0;
+
+  // Consultar bloques en grupos pequeños para no saturar nodos públicos.
+  for (let start = 0; start < depth; start += 5) {
+    const group = [];
+    for (let offset = start; offset < Math.min(start+5,depth); offset++) {
+      group.push(latest-offset);
+    }
+    const results = await Promise.allSettled(group.map((blockNumber,index) =>
+      rpcCall(endpoint,"eth_getBlockByNumber",["0x"+blockNumber.toString(16),true],start+index+10)
+    ));
+    for (const result of results) {
+      if (result.status !== "fulfilled" || !result.value) continue;
+      scanned++;
+      const block = result.value;
+      const timestamp = Number(BigInt(block.timestamp))*1000;
+      for (const tx of (block.transactions || [])) {
+        if (!tx || !tx.value || tx.value === "0x0") continue;
+        const amount = Number(BigInt(tx.value))/1e18;
+        if (amount < 1000) continue;
+        transactions.push({
+          hash:tx.hash,from:tx.from,to:tx.to || null,amount,
+          block:Number(BigInt(block.number)),timestamp
+        });
+      }
+    }
+  }
+
+  if (!scanned) throw new Error("No se pudo leer ningún bloque");
+  transactions.sort((a,b)=>b.block-a.block || b.amount-a.amount);
+  return {latest,scanned,transactions:transactions.slice(0,20)};
+}
+
+async function loadLargeTransfers() {
+  $("transferStatus").textContent = "Consultando los últimos 30 bloques de Ethereum…";
+  $("transferRows").innerHTML = '<tr><td colspan="6">Buscando transferencias nativas de ETH de 1,000 ETH o más…</td></tr>';
+  let result = null, lastError = null, endpointUsed = "";
+
+  for (const endpoint of RPC_ENDPOINTS) {
     try {
-      const response = await fetch(endpoint, {
-        method:"POST", mode:"cors", credentials:"omit",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({jsonrpc:"2.0",method:"eth_getBalance",params:[address,"latest"],id})
-      });
-      if (!response.ok) throw new Error("RPC HTTP " + response.status);
-      const result = await response.json();
-      if (result.error || !result.result) throw new Error("Respuesta RPC no válida");
-      return (Number(BigInt(result.result)) / 1e18).toLocaleString("es-MX",{maximumFractionDigits:3}) + " ETH";
+      result = await scanTransfersWith(endpoint);
+      endpointUsed = endpoint.includes("publicnode") ? "PublicNode" : "Cloudflare";
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (!result) {
+    $("transferStatus").textContent = "No fue posible consultar la red Ethereum. " + (lastError ? lastError.message : "");
+    $("transferRows").innerHTML = '<tr><td colspan="6">Datos de transferencias no disponibles. Vuelve a intentarlo más tarde.</td></tr>';
+    $("blockScanState").textContent = "Sin conexión";
+    $("largeTransferCount").textContent = "No disponible";
+    $("readoutText").textContent = "No se pudo consultar el historial reciente de bloques; no se genera una señal de actividad.";
+    return;
+  }
+
+  $("blockScanState").textContent = result.scanned + "/30 · " + endpointUsed;
+  $("largeTransferCount").textContent = String(result.transactions.length);
+  $("transferStatus").textContent = "Se revisaron "+result.scanned+" de 30 bloques recientes · Nodo: "+endpointUsed+
+    " · Último bloque: "+result.latest.toLocaleString("es-MX");
+
+  if (!result.transactions.length) {
+    $("transferRows").innerHTML = '<tr><td colspan="6">No se encontraron transferencias principales de 1,000 ETH o más en los bloques revisados.</td></tr>';
+  } else {
+    $("transferRows").innerHTML = result.transactions.map(tx => {
+      const time = new Date(tx.timestamp).toLocaleTimeString("es-MX",{hour:"2-digit",minute:"2-digit",second:"2-digit",timeZone:"UTC"});
+      const from = tx.from || "";
+      const to = tx.to || "Contrato / creación";
+      const shortAddress = address => address === "Contrato / creación" ? address : address.slice(0,8)+"…"+address.slice(-6);
+      return '<tr><td>'+time+'</td><td>'+tx.block.toLocaleString("es-MX")+'</td>'+
+        '<td class="address"><a href="https://etherscan.io/address/'+from+'" target="_blank" rel="noreferrer">'+shortAddress(from)+'</a></td>'+
+        '<td class="address">'+(tx.to ? '<a href="https://etherscan.io/address/'+to+'" target="_blank" rel="noreferrer">'+shortAddress(to)+'</a>' : to)+'</td>'+
+        '<td class="balance">'+tx.amount.toLocaleString("es-MX",{maximumFractionDigits:2})+' ETH</td>'+
+        '<td><a href="https://etherscan.io/tx/'+tx.hash+'" target="_blank" rel="noreferrer">Ver TX ↗</a></td></tr>';
+    }).join("");
+  }
+
+  $("readoutText").textContent = result.transactions.length
+    ? "Se detectaron "+result.transactions.length+" transferencias principales de 1,000 ETH o más en los "+result.scanned+" bloques consultados. Son movimientos observados, no ventas confirmadas."
+    : "Se revisaron "+result.scanned+" bloques y no se encontraron transferencias principales de 1,000 ETH o más. El resultado no cubre movimientos internos ni tokens.";
+}
+
+function drawWalletHealth(available,total) {
+  $("walletHealth").textContent = available+"/"+total+" con saldo";
+}
+
+async function getBalance(address,id) {
+  for (const endpoint of RPC_ENDPOINTS) {
+    try {
+      const result = await rpcCall(endpoint,"eth_getBalance",[address,"latest"],id);
+      return (Number(BigInt(result))/1e18).toLocaleString("es-MX",{maximumFractionDigits:3})+" ETH";
     } catch {
       // Probar el siguiente nodo público.
     }
@@ -223,17 +307,18 @@ async function getBalance(address, id) {
 async function loadWallets() {
   const addresses = getWallets();
   $("walletCount").textContent = addresses.length;
-  $("walletPill").textContent = addresses.length + " DIRECCIONES";
+  $("walletPill").textContent = addresses.length+" DIRECCIONES";
   $("walletRows").innerHTML = addresses.map((wallet,index) =>
-    '<tr><td><b>' + escapeHTML(wallet.label || "Cartera sin etiqueta") + '</b></td>' +
-    '<td class="address">' + wallet.address.slice(0,10) + "…" + wallet.address.slice(-8) + '</td>' +
-    '<td><span class="tag">' + escapeHTML(wallet.type || "AGREGADA POR EL USUARIO") + '</span></td>' +
-    '<td class="balance" id="bal-' + index + '">Consultando…</td>' +
-    '<td><a href="https://etherscan.io/address/' + wallet.address + '" target="_blank" rel="noreferrer">Etherscan ↗</a></td></tr>'
+    '<tr><td><b>'+escapeHTML(wallet.label || "Cartera sin etiqueta")+'</b></td>'+
+    '<td class="address">'+wallet.address.slice(0,10)+'…'+wallet.address.slice(-8)+'</td>'+
+    '<td><span class="tag">'+escapeHTML(wallet.type || "AGREGADA POR EL USUARIO")+'</span></td>'+
+    '<td class="balance" id="bal-'+index+'">Consultando…</td>'+
+    '<td><a href="https://etherscan.io/address/'+wallet.address+'" target="_blank" rel="noreferrer">Etherscan ↗</a></td></tr>'
   ).join("");
-  await Promise.all(addresses.map(async (wallet,index) => {
-    $("bal-" + index).textContent = await getBalance(wallet.address,index + 1);
-  }));
+
+  const balances = await Promise.all(addresses.map((wallet,index)=>getBalance(wallet.address,index+1)));
+  balances.forEach((balance,index)=>{$("bal-"+index).textContent=balance;});
+  drawWalletHealth(balances.filter(balance=>balance!=="No disponible").length,addresses.length);
 }
 
 function addWallet() {
@@ -244,7 +329,7 @@ function addWallet() {
     return;
   }
   const addresses = getWallets();
-  if (addresses.some(wallet => wallet.address.toLowerCase() === address.toLowerCase())) {
+  if (addresses.some(wallet=>wallet.address.toLowerCase()===address.toLowerCase())) {
     notify("Esa dirección ya está en tu lista.");
     return;
   }
@@ -258,23 +343,21 @@ function addWallet() {
 
 async function refresh() {
   $("refresh").disabled = true;
-  try {
-    await market();
-    notify("Precio de ETH actualizado.");
-  } catch (error) {
-    notify("No se pudo consultar ninguna fuente de precio.");
-  }
-  await loadWallets();
+  await Promise.allSettled([market(),loadWallets(),loadLargeTransfers()]);
   $("lastUpdated").textContent = new Date().toLocaleString("es-MX");
   $("refresh").disabled = false;
 }
 
 $("refresh").addEventListener("click",refresh);
 $("addWallet").addEventListener("click",addWallet);
-$("walletAddress").addEventListener("keydown",event => {
-  if (event.key === "Enter") addWallet();
-});
+$("walletAddress").addEventListener("keydown",event=>{if(event.key==="Enter")addWallet();});
 refresh();
-setInterval(() => {
-  if (!document.hidden) market().catch(() => {});
+setInterval(()=>{
+  if(document.hidden) return;
+  getLivePrice().then(displayPrice).catch(()=>{});
 },60000);
+setInterval(()=>{
+  if(document.hidden) return;
+  loadMarketMetrics();
+  loadLargeTransfers();
+},300000);
