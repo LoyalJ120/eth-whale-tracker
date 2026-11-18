@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="styles.css"></head>
 <body><div class="shell">
 <aside class="sidebar"><a class="brand" href="#"><span class="brand-mark">Ξ</span><span>ETH <i>WHALE</i><small>TERMINAL DE INTELIGENCIA</small></span></a>
-<div class="nav-label">ESPACIO DE TRABAJO</div><a class="nav active" href="#overview">◫ <span>Resumen</span></a><a class="nav" href="#watchlist">◎ <span>Carteras vigiladas</span></a><a class="nav" href="#activity">⇄ <span>Actividad on-chain</span></a><a class="nav" href="#method">⌁ <span>Metodología</span></a>
+<div class="nav-label">ESPACIO DE TRABAJO</div><a class="nav active" href="#overview">◫ <span>Resumen</span></a><a class="nav" href="#watchlist">◎ <span>Carteras vigiladas</span></a><a class="nav" href="#activity">⇄ <span>Actividad on-chain</span></a><a class="nav" href="#hyperliquid">⇅ <span>Ballenas Hyperliquid</span></a><a class="nav" href="#method">⌁ <span>Metodología</span></a>
 <div class="side-bottom"><b>● MODO DE DATOS PÚBLICOS</b><small>Sin claves privadas · Solo lectura</small></div></aside>
 <main class="main" id="overview">
 <header class="topbar"><div><div class="eyebrow">ETHEREUM / INTELIGENCIA ON-CHAIN</div><h1>Rastreador de ballenas <span>/ Monitoreo diario</span></h1></div><div class="top-actions"><span class="network">● RED PRINCIPAL</span><button id="refresh" class="refresh">↻ <span>Actualizar datos</span></button></div></header>
@@ -20,6 +20,41 @@
 <div class="table-wrap"><table><thead><tr><th>ENTIDAD / ETIQUETA</th><th>DIRECCIÓN</th><th>CLASIFICACIÓN</th><th>SALDO</th><th>EXPLORADOR</th></tr></thead><tbody id="walletRows"><tr><td colspan="5">Cargando direcciones vigiladas…</td></tr></tbody></table></div>
 <div class="add-wallet"><div><b>Agregar una cartera</b><small>Pega una dirección de la red principal de Ethereum para consultar su saldo de ETH.</small></div><div class="add-controls"><input id="walletAddress" placeholder="0x… (42 caracteres)" maxlength="42"><input id="walletLabel" placeholder="Etiqueta (opcional)" maxlength="40"><button id="addWallet">＋ Agregar</button></div></div><p class="note">Las direcciones personalizadas se guardan solo en este navegador. Nunca introduzcas frases semilla ni claves privadas.</p></section>
 <section id="activity" class="panel section"><div class="panel-head"><div><div class="eyebrow">MONITOREO DE LA RED</div><h2>Últimas transferencias grandes</h2><p class="sub" id="transferStatus">Consultando los bloques más recientes de Ethereum…</p></div><a class="text-link" href="https://etherscan.io/txs" target="_blank" rel="noreferrer">Abrir Etherscan ↗</a></div><div class="table-wrap"><table><thead><tr><th>HORA UTC</th><th>BLOQUE</th><th>ORIGEN</th><th>DESTINO</th><th>MONTO</th><th>TRANSACCIÓN</th></tr></thead><tbody id="transferRows"><tr><td colspan="6">Buscando transferencias grandes…</td></tr></tbody></table></div><p class="note">Escaneo exploratorio de los últimos 30 bloques (~6 minutos). Solo incluye ETH nativo enviado en transacciones principales; no incluye transferencias internas, tokens ERC-20 ni movimientos en otras redes. Un depósito a un exchange no confirma una venta.</p></section>
+
+<section id="hyperliquid" class="panel section">
+  <div class="panel-head">
+    <div>
+      <div class="eyebrow">PERPETUOS · DATOS PÚBLICOS DE HYPERLIQUID</div>
+      <h2>Ballenas LONG / SHORT</h2>
+      <p class="sub">Detecta ejecuciones grandes en vivo y verifica la posición abierta actual de las carteras participantes.</p>
+    </div>
+    <span id="hlStatus" class="hl-status">CONECTANDO…</span>
+  </div>
+  <div class="hl-toolbar">
+    <label for="hlThreshold">Umbral mínimo de la posición abierta</label>
+    <select id="hlThreshold">
+      <option value="100000">$100,000 USD</option>
+      <option value="250000" selected>$250,000 USD</option>
+      <option value="500000">$500,000 USD</option>
+      <option value="1000000">$1,000,000 USD</option>
+    </select>
+    <span id="hlMarkets" class="hl-markets">Mercados: —</span>
+  </div>
+  <div class="hl-stats">
+    <div><small>Operaciones grandes detectadas</small><b id="hlTradeCount">0</b></div>
+    <div><small>Posiciones LONG verificadas</small><b id="hlLongTotal" class="up">$0</b></div>
+    <div><small>Posiciones SHORT verificadas</small><b id="hlShortTotal" class="down">$0</b></div>
+    <div><small>Carteras con posición grande</small><b id="hlWalletCount">0</b></div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>HORA UTC</th><th>ACTIVO</th><th>CARTERA</th><th>PARTICIPACIÓN</th><th>POSICIÓN ACTUAL</th><th>TAMAÑO POSICIÓN</th><th>PRECIO DE ENTRADA</th><th>APALANCAMIENTO</th><th>LIQUIDACIÓN</th><th>CUENTA</th></tr></thead>
+      <tbody id="hlRows"><tr><td colspan="10">Conectando con el flujo público de operaciones de Hyperliquid…</td></tr></tbody>
+    </table>
+  </div>
+  <p id="hlLastEvent" class="note">Esperando operaciones que superen el umbral seleccionado.</p>
+  <p class="note">La dirección LONG/SHORT se obtiene de la posición abierta actual de cada cartera (signo de su tamaño de posición), no se deduce de que haya comprado o vendido. Este monitor escucha los 12 mercados perpetuos con mayor volumen y solo puede verificar carteras que aparecen en operaciones grandes mientras el dashboard está abierto. No es un censo completo de todas las posiciones de Hyperliquid; no identifica nombres reales y no conserva histórico al cerrar la página.</p>
+</section>
 <section id="method" class="panel section"><div class="eyebrow">INTEGRIDAD DE LOS DATOS</div><h2>Cómo interpretar este rastreador</h2><div class="method-grid"><div><b>01 / Los contratos conocidos no son ballenas</b><p>Beacon Deposit Contract, WETH y los puentes son infraestructura, no inversionistas individuales.</p></div><div><b>02 / Los depósitos a exchanges no equivalen a ventas</b><p>Un depósito puede ser custodia, garantía, reajuste interno o una posible venta.</p></div><div><b>03 / Confianza de la atribución</b><p>Las direcciones desconocidas permanecen como desconocidas. Las etiquetas requieren corroboración de fuentes confiables.</p></div><div><b>04 / Diseñado para solo lectura</b><p>Sin conexión a carteras, claves privadas, firmas ni ejecución de operaciones.</p></div></div></section>
 <footer><span>ETH WHALE TRACKER <b>v0.1.0</b></span><span>Herramienta de investigación · No es asesoría de inversión</span></footer>
-</main></div><div id="toast" class="toast"></div><script src="app.js?v=metrics-whales-3"></script></body></html>
+</main></div><div id="toast" class="toast"></div><script src="app.js?v=hyperliquid-whales-1"></script></body></html>
