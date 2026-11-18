@@ -341,6 +341,238 @@ function addWallet() {
   notify("Cartera agregada a este navegador.");
 }
 
+
+
+// Hyperliquid: flujo público de trades y verificación de posiciones actuales.
+const HL_INFO_URL = "https://api.hyperliquid.xyz/info";
+const HL_WS_URL = "wss://api.hyperliquid.xyz/ws";
+const HL_POSITION_CACHE_MS = 12000;
+const HL_MAX_PARALLEL_LOOKUPS = 6;
+let hlSocket = null;
+let hlPingTimer = null;
+let hlReconnectTimer = null;
+let hlActiveMarkets = [];
+let hlLargeTradeCount = 0;
+let hlStarted = false;
+const hlPositionCache = new Map();
+const hlPositionLookups = new Map();
+const hlWhalePositions = new Map();
+const hlSeenTradeIds = new Set();
+
+function hlMoney(value) {
+  return new Intl.NumberFormat("en-US", {style:"currency",currency:"USD",maximumFractionDigits:0}).format(value);
+}
+function hlShortAddress(address) {
+  return address.slice(0,8) + "…" + address.slice(-6);
+}
+function hlThreshold() {
+  return Number($("hlThreshold").value || 250000);
+}
+async function hyperliquidPost(payload) {
+  const response = await fetch(HL_INFO_URL, {
+    method:"POST", mode:"cors", credentials:"omit", cache:"no-store",
+    signal:AbortSignal.timeout(8000),
+    headers:{"Content-Type":"application/json","Accept":"application/json"},
+    body:JSON.stringify(payload)
+  });
+  if (!response.ok) throw new Error("Hyperliquid API HTTP " + response.status);
+  return response.json();
+}
+async function getHyperliquidMarkets() {
+  const response = await hyperliquidPost({type:"metaAndAssetCtxs"});
+  const meta = response && response[0];
+  const contexts = response && response[1];
+  if (!meta || !Array.isArray(meta.universe) || !Array.isArray(contexts)) {
+    throw new Error("Respuesta metaAndAssetCtxs incompleta");
+  }
+  const ranked = meta.universe.map((asset,index)=>({
+    coin:asset.name,
+    volume:Number(contexts[index] && contexts[index].dayNtlVlm || 0),
+    delisted:!!asset.isDelisted
+  })).filter(asset=>asset.coin && !asset.delisted && !asset.coin.includes(":") && asset.volume>0)
+    .sort((a,b)=>b.volume-a.volume).slice(0,12).map(asset=>asset.coin);
+  if (!ranked.includes("ETH")) ranked[ranked.length-1] = "ETH";
+  return [...new Set(ranked)];
+}
+function setHyperliquidStatus(message,live=false) {
+  const node = $("hlStatus");
+  if (!node) return;
+  node.textContent = message;
+  node.className = "hl-status" + (live ? " live" : "");
+}
+async function startHyperliquidWhaleTracker() {
+  if (hlStarted) return;
+  hlStarted = true;
+  setHyperliquidStatus("CONSULTANDO MERCADOS…");
+  try {
+    hlActiveMarkets = await getHyperliquidMarkets();
+    $("hlMarkets").textContent = "Mercados: " + hlActiveMarkets.join(" · ");
+    connectHyperliquidTrades();
+  } catch (error) {
+    setHyperliquidStatus("API NO DISPONIBLE");
+    $("hlRows").innerHTML = '<tr><td colspan="10">No se pudo obtener la lista de mercados de Hyperliquid. Se reintentará automáticamente.</td></tr>';
+    hlStarted = false;
+    clearTimeout(hlReconnectTimer);
+    hlReconnectTimer = setTimeout(startHyperliquidWhaleTracker,60000);
+  }
+}
+function connectHyperliquidTrades() {
+  if (!hlActiveMarkets.length) return;
+  clearTimeout(hlReconnectTimer);
+  if (hlSocket) {
+    try { hlSocket.close(); } catch {}
+  }
+  try {
+    hlSocket = new WebSocket(HL_WS_URL);
+  } catch {
+    setHyperliquidStatus("ERROR DE CONEXIÓN");
+    hlReconnectTimer = setTimeout(connectHyperliquidTrades,5000);
+    return;
+  }
+  hlSocket.onopen = () => {
+    hlActiveMarkets.forEach(coin=>{
+      hlSocket.send(JSON.stringify({method:"subscribe",subscription:{type:"trades",coin}}));
+    });
+    setHyperliquidStatus("EN VIVO · HYPERLIQUID",true);
+    clearInterval(hlPingTimer);
+    hlPingTimer = setInterval(()=>{
+      if (hlSocket && hlSocket.readyState===WebSocket.OPEN) {
+        try { hlSocket.send(JSON.stringify({method:"ping"})); } catch {}
+      }
+    },30000);
+  };
+  hlSocket.onmessage = event => {
+    let message;
+    try { message = JSON.parse(event.data); } catch { return; }
+    if (message.channel !== "trades" || !Array.isArray(message.data)) return;
+    message.data.forEach(handleHyperliquidTrade);
+  };
+  hlSocket.onerror = () => setHyperliquidStatus("REINTENTANDO CONEXIÓN");
+  hlSocket.onclose = () => {
+    clearInterval(hlPingTimer);
+    setHyperliquidStatus("DESCONECTADO · REINTENTANDO");
+    clearTimeout(hlReconnectTimer);
+    hlReconnectTimer = setTimeout(connectHyperliquidTrades,5000);
+  };
+}
+function handleHyperliquidTrade(trade) {
+  const price = Number(trade.px);
+  const size = Number(trade.sz);
+  const notional = price * size;
+  const users = Array.isArray(trade.users) ? trade.users : [];
+  if (!trade.coin || !Number.isFinite(notional) || notional < hlThreshold() ||
+      users.length < 2 || !users[0] || !users[1]) return;
+  const tradeId = String(trade.coin) + ":" + String(trade.tid || trade.time) + ":" + String(trade.hash || "");
+  if (hlSeenTradeIds.has(tradeId)) return;
+  hlSeenTradeIds.add(tradeId);
+  if (hlSeenTradeIds.size > 3000) hlSeenTradeIds.clear();
+  hlLargeTradeCount++;
+  $("hlTradeCount").textContent = hlLargeTradeCount.toLocaleString("en-US");
+  const flow = trade.side === "B" ? "Compra agresora" : trade.side === "A" ? "Venta agresora" : "Ejecución";
+  const info = {
+    coin:trade.coin, price, size, notional, time:Number(trade.time)||Date.now(),
+    hash:trade.hash || "", flow
+  };
+  const participants = [
+    {address:users[0],role:"Comprador"},
+    {address:users[1],role:"Vendedor"}
+  ];
+  participants.forEach(participant=>{
+    if (!/^0x[a-fA-F0-9]{40}$/.test(participant.address)) return;
+    resolveHyperliquidPosition(participant.address,trade.coin).then(position=>{
+      if (!position) return;
+      const key = participant.address.toLowerCase() + "|" + trade.coin;
+      if (position.notional >= hlThreshold()) {
+        hlWhalePositions.set(key,{
+          address:participant.address,role:participant.role,trade:info,position
+        });
+      } else {
+        hlWhalePositions.delete(key);
+      }
+      renderHyperliquidWhales();
+    });
+  });
+  $("hlLastEvent").textContent = "Última gran ejecución: " + trade.coin + " · " +
+    hlMoney(notional) + " · " + flow + " · " + new Date(info.time).toLocaleTimeString("es-MX",{timeZone:"UTC"}) + " UTC. Consultando las posiciones de sus participantes…";
+}
+async function resolveHyperliquidPosition(address,coin) {
+  const key = address.toLowerCase();
+  const now = Date.now();
+  const cached = hlPositionCache.get(key);
+  if (cached && now-cached.time < HL_POSITION_CACHE_MS) {
+    return cached.positions.find(item=>item.coin===coin) || null;
+  }
+  if (hlPositionLookups.has(key)) {
+    const result = await hlPositionLookups.get(key);
+    return result ? result.find(item=>item.coin===coin) || null : null;
+  }
+  if (hlPositionLookups.size >= HL_MAX_PARALLEL_LOOKUPS) return null;
+  const request = hyperliquidPost({type:"clearinghouseState",user:address})
+    .then(data=>{
+      const positions = (data.assetPositions || []).map(item=>{
+        const p = item.position || {};
+        const signedSize = Number(p.szi || 0);
+        const entry = Number(p.entryPx || 0);
+        const value = Number(p.positionValue);
+        const notional = Number.isFinite(value) ? Math.abs(value) : Math.abs(signedSize*entry);
+        return {
+          coin:p.coin,
+          side:signedSize>0 ? "LONG" : signedSize<0 ? "SHORT" : "—",
+          signedSize, notional, entry,
+          leverage:Number(p.leverage && p.leverage.value) || null,
+          liquidation:Number(p.liquidationPx) || null,
+          unrealizedPnl:Number(p.unrealizedPnl) || 0
+        };
+      }).filter(item=>item.coin && item.signedSize!==0);
+      hlPositionCache.set(key,{time:Date.now(),positions});
+      if (hlPositionCache.size>300) {
+        hlPositionCache.delete(hlPositionCache.keys().next().value);
+      }
+      return positions;
+    })
+    .catch(()=>null)
+    .finally(()=>hlPositionLookups.delete(key));
+  hlPositionLookups.set(key,request);
+  const positions = await request;
+  return positions ? positions.find(item=>item.coin===coin) || null : null;
+}
+function renderHyperliquidWhales() {
+  const threshold = hlThreshold();
+  for (const [key,item] of hlWhalePositions.entries()) {
+    if (item.position.notional < threshold) hlWhalePositions.delete(key);
+  }
+  const positions = [...hlWhalePositions.values()].sort((a,b)=>b.position.notional-a.position.notional);
+  const longs = positions.filter(item=>item.position.side==="LONG");
+  const shorts = positions.filter(item=>item.position.side==="SHORT");
+  const longTotal = longs.reduce((sum,item)=>sum+item.position.notional,0);
+  const shortTotal = shorts.reduce((sum,item)=>sum+item.position.notional,0);
+  $("hlLongTotal").textContent = hlMoney(longTotal);
+  $("hlShortTotal").textContent = hlMoney(shortTotal);
+  $("hlWalletCount").textContent = positions.length.toLocaleString("en-US");
+  if (!positions.length) {
+    $("hlRows").innerHTML = '<tr><td colspan="10">Aún no hay posiciones abiertas que superen el umbral entre las carteras observadas. El rastreador seguirá escuchando el flujo en vivo.</td></tr>';
+    return;
+  }
+  $("hlRows").innerHTML = positions.slice(0,40).map(item=>{
+    const p = item.position, t = item.trade;
+    const time = new Date(t.time).toLocaleTimeString("es-MX",{hour:"2-digit",minute:"2-digit",second:"2-digit",timeZone:"UTC"});
+    const sideClass = p.side==="LONG" ? "up" : "down";
+    const entry = p.entry ? p.entry.toLocaleString("en-US",{maximumFractionDigits:6}) : "—";
+    const lev = p.leverage ? p.leverage.toFixed(1)+"x" : "—";
+    const liq = p.liquidation ? p.liquidation.toLocaleString("en-US",{maximumFractionDigits:6}) : "—";
+    return '<tr><td>'+time+'</td><td><b>'+escapeHTML(t.coin)+'</b></td>'+
+      '<td class="address">'+hlShortAddress(item.address)+'</td>'+
+      '<td>'+item.role+'<br><span class="muted">'+t.flow+'</span></td>'+
+      '<td class="'+sideClass+'"><b>'+p.side+'</b></td>'+
+      '<td class="balance">'+hlMoney(p.notional)+'</td>'+
+      '<td class="balance">'+entry+'</td><td class="balance">'+lev+'</td><td class="balance">'+liq+'</td>'+
+      '<td><a href="https://app.hyperliquid.xyz/explorer/address/'+item.address+'" target="_blank" rel="noreferrer">Hyperliquid ↗</a></td></tr>';
+  }).join("");
+}
+function updateHyperliquidThreshold() {
+  renderHyperliquidWhales();
+}
+
 async function refresh() {
   $("refresh").disabled = true;
   await Promise.allSettled([market(),loadWallets(),loadLargeTransfers()]);
@@ -350,6 +582,8 @@ async function refresh() {
 
 $("refresh").addEventListener("click",refresh);
 $("addWallet").addEventListener("click",addWallet);
+$("hlThreshold").addEventListener("change",updateHyperliquidThreshold);
+startHyperliquidWhaleTracker();
 $("walletAddress").addEventListener("keydown",event=>{if(event.key==="Enter")addWallet();});
 refresh();
 setInterval(()=>{
