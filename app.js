@@ -246,7 +246,7 @@ async function loadLargeTransfers() {
   for (const endpoint of RPC_ENDPOINTS) {
     try {
       result = await scanTransfersWith(endpoint);
-      endpointUsed = endpoint.includes("publicnode") ? "PublicNode" : "Cloudflare";
+      endpointUsed = endpoint.includes("publicnode") ? "PublicNode" : "dRPC";
       break;
     } catch (error) {
       lastError = error;
@@ -569,6 +569,27 @@ function renderHyperliquidWhales() {
       '<td><a href="https://app.hyperliquid.xyz/explorer/address/'+item.address+'" target="_blank" rel="noreferrer">Hyperliquid ↗</a></td></tr>';
   }).join("");
 }
+
+async function refreshTrackedHyperliquidPositions() {
+  const entries = [...hlWhalePositions.entries()];
+  for (let start=0; start<entries.length; start+=HL_MAX_PARALLEL_LOOKUPS) {
+    const batch = entries.slice(start,start+HL_MAX_PARALLEL_LOOKUPS);
+    const updated = await Promise.all(batch.map(async ([key,item])=>({
+      key,
+      position:await resolveHyperliquidPosition(item.address,item.trade.coin)
+    })));
+    updated.forEach(item=>{
+      if (!item.position || item.position.notional < hlThreshold()) {
+        hlWhalePositions.delete(item.key);
+      } else {
+        const previous = hlWhalePositions.get(item.key);
+        if (previous) previous.position = item.position;
+      }
+    });
+  }
+  renderHyperliquidWhales();
+}
+
 function updateHyperliquidThreshold() {
   renderHyperliquidWhales();
 }
@@ -595,3 +616,7 @@ setInterval(()=>{
   loadMarketMetrics();
   loadLargeTransfers();
 },300000);
+setInterval(()=>{
+  if(document.hidden) return;
+  refreshTrackedHyperliquidPositions();
+},60000);
